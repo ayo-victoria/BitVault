@@ -99,3 +99,114 @@
         state: (string-ascii 9), ;; "ACTIVE" or "EXERCISED"
     }
 )
+
+;; User Position Tracking
+(define-map user-positions
+    principal
+    {
+        written-options: (list 10 uint),
+        held-options: (list 10 uint),
+        total-collateral-locked: uint,
+    }
+)
+
+;; Token Whitelist for Security
+(define-map approved-tokens
+    principal
+    bool
+)
+
+;; Price Oracle Symbol Whitelist
+(define-map allowed-symbols
+    (string-ascii 10)
+    bool
+)
+
+;; Real-time Price Feed Integration
+(define-map price-feeds
+    (string-ascii 10)
+    {
+        price: uint,
+        timestamp: uint,
+        source: principal,
+    }
+)
+
+;; STATE VARIABLES
+
+;; Option ID Counter
+(define-data-var next-option-id uint u1)
+
+;; Protocol Governance
+(define-data-var contract-owner principal tx-sender)
+(define-data-var protocol-fee-rate uint u100) ;; 1% = 100 basis points
+
+;; CORE PROTOCOL FUNCTIONS
+
+;; Write Option Contract
+;; Allows users to create new options by locking collateral
+(define-public (write-option
+        (token <sip-010-trait>)
+        (collateral-amount uint)
+        (strike-price uint)
+        (premium uint)
+        (expiry uint)
+        (option-type (string-ascii 4))
+    )
+    (let (
+            (option-id (var-get next-option-id))
+            (current-time stacks-block-height)
+            (token-principal (contract-of token))
+        )
+        ;; Security Validations
+        (asserts! (is-approved-token token-principal) ERR-INVALID-TOKEN)
+        (asserts! (> expiry current-time) ERR-INVALID-EXPIRY)
+        (asserts! (> strike-price u0) ERR-INVALID-STRIKE-PRICE)
+        (asserts! (> premium u0) ERR-INVALID-PREMIUM)
+        (asserts!
+            (check-collateral-requirement collateral-amount strike-price
+                option-type
+            )
+            ERR-INSUFFICIENT-COLLATERAL
+        )
+        ;; Lock Collateral in Contract
+        (try! (contract-call? token transfer collateral-amount tx-sender
+            (as-contract tx-sender) none
+        ))
+        ;; Create Option Entry
+        (map-set options option-id {
+            writer: tx-sender,
+            holder: none,
+            collateral-amount: collateral-amount,
+            strike-price: strike-price,
+            premium: premium,
+            expiry: expiry,
+            is-exercised: false,
+            option-type: option-type,
+            state: "ACTIVE",
+        })
+        ;; Update Writer's Position
+        (let ((current-position (default-to {
+                written-options: (list),
+                held-options: (list),
+                total-collateral-locked: u0,
+            }
+                (map-get? user-positions tx-sender)
+            )))
+            (map-set user-positions tx-sender
+                (merge current-position {
+                    written-options: (unwrap-panic (as-max-len?
+                        (append (get written-options current-position) option-id)
+                        u10
+                    )),
+                    total-collateral-locked: (+ (get total-collateral-locked current-position)
+                        collateral-amount
+                    ),
+                })
+            )
+        )
+        ;; Increment Option Counter
+        (var-set next-option-id (+ option-id u1))
+        (ok option-id)
+    )
+)
