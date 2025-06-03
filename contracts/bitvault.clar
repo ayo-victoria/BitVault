@@ -210,3 +210,79 @@
         (ok option-id)
     )
 )
+
+;; Purchase Option Contract
+;; Allows users to buy existing options by paying premium
+(define-public (buy-option
+        (token <sip-010-trait>)
+        (option-id uint)
+    )
+    (let (
+            (option (unwrap! (map-get? options option-id) ERR-OPTION-NOT-FOUND))
+            (premium (get premium option))
+            (token-principal (contract-of token))
+        )
+        ;; Security Validations
+        (asserts! (is-approved-token token-principal) ERR-INVALID-TOKEN)
+        (asserts! (is-none (get holder option)) ERR-ALREADY-EXERCISED)
+        (asserts! (< stacks-block-height (get expiry option)) ERR-OPTION-EXPIRED)
+        ;; Transfer Premium to Writer
+        (try! (contract-call? token transfer premium tx-sender (get writer option) none))
+        ;; Update Option Holder
+        (map-set options option-id (merge option { holder: (some tx-sender) }))
+        ;; Update Buyer's Position
+        (let ((current-position (default-to {
+                written-options: (list),
+                held-options: (list),
+                total-collateral-locked: u0,
+            }
+                (map-get? user-positions tx-sender)
+            )))
+            (map-set user-positions tx-sender
+                (merge current-position { held-options: (unwrap-panic (as-max-len?
+                    (append (get held-options current-position) option-id)
+                    u10
+                )) }
+                ))
+        )
+        (ok true)
+    )
+)
+
+;; Exercise Option Contract
+;; Allows option holders to exercise their contracts
+(define-public (exercise-option
+        (token <sip-010-trait>)
+        (option-id uint)
+    )
+    (let (
+            (option (unwrap! (map-get? options option-id) ERR-OPTION-NOT-FOUND))
+            (current-price (get-current-price))
+            (token-principal (contract-of token))
+        )
+        ;; Security Validations
+        (asserts! (is-approved-token token-principal) ERR-INVALID-TOKEN)
+        (asserts! (is-eq (some tx-sender) (get holder option)) ERR-NOT-AUTHORIZED)
+        (asserts! (not (get is-exercised option)) ERR-ALREADY-EXERCISED)
+        (asserts! (< stacks-block-height (get expiry option)) ERR-OPTION-EXPIRED)
+        ;; Execute Exercise Logic Based on Option Type
+        (if (is-eq (get option-type option) "CALL")
+            (exercise-call token option current-price)
+            (exercise-put token option current-price)
+        )
+    )
+)
+
+;; PRIVATE HELPER FUNCTIONS
+
+;; Validate Collateral Requirements
+(define-private (check-collateral-requirement
+        (amount uint)
+        (strike uint)
+        (option-type (string-ascii 4))
+    )
+    (if (is-eq option-type "CALL")
+        (>= amount strike)
+        (>= amount (/ (* strike u100000000) (get-current-price)))
+    )
+)
