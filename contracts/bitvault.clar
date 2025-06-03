@@ -286,3 +286,108 @@
         (>= amount (/ (* strike u100000000) (get-current-price)))
     )
 )
+
+;; Execute Call Option Exercise
+(define-private (exercise-call
+        (token <sip-010-trait>)
+        (option {
+            writer: principal,
+            holder: (optional principal),
+            collateral-amount: uint,
+            strike-price: uint,
+            premium: uint,
+            expiry: uint,
+            is-exercised: bool,
+            option-type: (string-ascii 4),
+            state: (string-ascii 9),
+        })
+        (current-price uint)
+    )
+    (let (
+            (profit (- current-price (get strike-price option)))
+            (payout (get-min profit (get collateral-amount option)))
+        )
+        ;; Transfer Payout to Holder
+        (try! (as-contract (contract-call? token transfer payout tx-sender
+            (unwrap! (get holder option) ERR-NOT-AUTHORIZED) none
+        )))
+        ;; Return Remaining Collateral to Writer
+        (try! (as-contract (contract-call? token transfer (- (get collateral-amount option) payout)
+            tx-sender (get writer option) none
+        )))
+        ;; Update Option State
+        (map-set options (get-option-id option)
+            (merge option {
+                is-exercised: true,
+                state: "EXERCISED",
+            })
+        )
+        (ok true)
+    )
+)
+
+;; Execute Put Option Exercise
+(define-private (exercise-put
+        (token <sip-010-trait>)
+        (option {
+            writer: principal,
+            holder: (optional principal),
+            collateral-amount: uint,
+            strike-price: uint,
+            premium: uint,
+            expiry: uint,
+            is-exercised: bool,
+            option-type: (string-ascii 4),
+            state: (string-ascii 9),
+        })
+        (current-price uint)
+    )
+    (let (
+            (profit (- (get strike-price option) current-price))
+            (payout (get-min profit (get collateral-amount option)))
+        )
+        ;; Transfer Payout to Holder
+        (try! (as-contract (contract-call? token transfer payout tx-sender
+            (unwrap! (get holder option) ERR-NOT-AUTHORIZED) none
+        )))
+        ;; Return Remaining Collateral to Writer
+        (try! (as-contract (contract-call? token transfer (- (get collateral-amount option) payout)
+            tx-sender (get writer option) none
+        )))
+        ;; Update Option State
+        (map-set options (get-option-id option)
+            (merge option {
+                is-exercised: true,
+                state: "EXERCISED",
+            })
+        )
+        (ok true)
+    )
+)
+
+;; ORACLE & VALIDATION UTILITIES
+
+;; Get Current BTC Price from Oracle
+(define-private (get-current-price)
+    (get price (unwrap! (map-get? price-feeds "BTC-USD") u0))
+)
+
+;; Get Option ID Helper
+(define-private (get-option-id (option {
+    writer: principal,
+    holder: (optional principal),
+    collateral-amount: uint,
+    strike-price: uint,
+    premium: uint,
+    expiry: uint,
+    is-exercised: bool,
+    option-type: (string-ascii 4),
+    state: (string-ascii 9),
+}))
+    (var-get next-option-id)
+)
+
+;; Token Approval Validation
+(define-private (is-approved-token (token principal))
+    (default-to false (map-get? approved-tokens token))
+)
